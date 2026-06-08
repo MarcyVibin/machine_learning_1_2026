@@ -20,19 +20,6 @@ from scipy.stats import gaussian_kde
 warnings.filterwarnings("ignore")
 #TODO: Order imports for better looks
 
-#=======================================
-#
-# Helper Functions
-#
-#=======================================
-def executePlot(fig, fig_name:str, show:bool = True, save:bool = False):
-    if save: fig.savefig(fig_name)
-    if show: plt.show()
-    plt.close()
-
-
-
-
 #def loadData(D_path="D.csv", D_out_path="D_out.csv") -> pd.DataFrame:
 print("Loading data …")
 D_path="D.csv"
@@ -54,6 +41,22 @@ df_combined      = pd.concat(
     ignore_index=True
 )
 
+#classifier and scaler definitions
+_clf = None
+_scaler = None
+
+
+
+#=======================================
+#
+# Helper Functions
+#
+#=======================================
+def executePlot(fig, fig_name:str, show:bool = True, save:bool = False):
+    if save: fig.savefig(fig_name)
+    if show: plt.show()
+    plt.close()
+
 
 def printStatistics(should_print:bool = True):
     if should_print:
@@ -68,6 +71,9 @@ def printStatistics(should_print:bool = True):
 
 
 def handlePlots(show: bool = True, save_fig: bool = False):
+
+    if not show and not save_fig:
+        return
 
     #========= PLOT 1 =========
     print("\n[Plot 1] Class label distribution …")
@@ -251,6 +257,54 @@ def handlePlots(show: bool = True, save_fig: bool = False):
     plt.tight_layout()
     executePlot(fig, "img/07_class_mean_feature_heatmap", show, save_fig)
 
+def testKNN():
+    print("\n── KNN Test ─────────────────────────────────────────────────────────")
+    
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    X_vals = X[feature_cols].values
+    y_vals = y.values
+
+    fold_scores = []
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X_vals, y_vals)):
+        X_train, X_val = X_vals[train_idx], X_vals[val_idx]
+        y_train, y_val = y_vals[train_idx], y_vals[val_idx]
+
+        clf, scaler = trainKNN(X_train, y_train)
+        y_pred = scaler.transform(X_val)
+        y_pred = clf.predict(y_pred)
+
+        score = f1_score(y_val, y_pred, average="macro")
+        fold_scores.append(score)
+        print(f"  Fold {fold+1}: macro-F1 = {score:.4f}")
+
+    print(f"\n  Mean macro-F1 : {np.mean(fold_scores):.4f}")
+    print(f"  Std macro-F1  : {np.std(fold_scores):.4f}")
+    print("\n── Full classification report (last fold) ───────────────────────────")
+    print(classification_report(y_val, y_pred,
+                                target_names=[f"Class {i}" for i in range(5)]))
+    print(f"  Accuracy : {accuracy_score(y_val, y_pred):.4f}")
+
+def findBestK(k_values=[i for i in range(1, 15)]):
+    print("\n── K Selection ──────────────────────────────────────────────────────")
+    X_vals = X[feature_cols].values
+    y_vals = y.values
+    skf    = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    best_k, best_score = None, 0.0
+    for k in k_values:
+        fold_scores = []
+        for train_idx, val_idx in skf.split(X_vals, y_vals):
+            clf, scaler = trainKNN(X_vals[train_idx], y_vals[train_idx], k=k)
+            y_pred      = clf.predict(scaler.transform(X_vals[val_idx]))
+            fold_scores.append(f1_score(y_vals[val_idx], y_pred, average="macro"))
+
+        mean = np.mean(fold_scores)
+        print(f"  K={k:2d}  macro-F1={mean:.4f} ± {np.std(fold_scores):.4f}")
+        if mean > best_score:
+            best_k, best_score = k, mean
+
+    print(f"\n  → Best K = {best_k}  (macro-F1 = {best_score:.4f})")
+    return best_k
 
 def dataAnalysis(show_plot:bool = True, save_fig:bool = False):
     
@@ -261,19 +315,32 @@ def dataAnalysis(show_plot:bool = True, save_fig:bool = False):
 
     return
 
-
+def trainKNN(X_train, y_train, k=8):
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_train)
+    
+    clf = KNeighborsClassifier(n_neighbors=k)
+    clf.fit(X_scaled, y_train)
+    
+    return clf, scaler
 
 
 def predict(X_test):
-    # TODO replace this with your model's predictions
-    # For now, we will just return random predictions
-    labels = np.random.randint(4, size=len(X_test))
-    outliers = np.random.randint(2, size=len(X_test))
+    global _clf, _scaler
+
+    # Train once and reuse
+    if _clf is None or _scaler is None:
+        feature_cols_test = [c for c in X_test.columns if c != "id"]
+        _clf, _scaler = trainKNN(X[feature_cols].values, y.values)
+
+    X_scaled = _scaler.transform(X_test[[c for c in X_test.columns if c != "id"]].values)
+    labels   = _clf.predict(X_scaled)
+    outliers = np.zeros(len(X_test), dtype=int)  #TODO: placeholder until outlier detection is implemented
+
     return labels, outliers
 
 def generate_submission(test_data):
     label_predictions, outlier_predictions = predict(test_data)
-
     # IMPORTANT: stick to this format for the submission,
     # otherwise your submission will results in an error
     submission_df = pd.DataFrame(
@@ -288,22 +355,23 @@ def generate_submission(test_data):
 
 def main():
 
-    dataAnalysis(False,True)
+    dataAnalysis(False, False)
+    testKNN()
+    findBestK()
 
-
-    '''TODO: implement comment. commented out to avoid errors
-    df_leaderboard = pd.read_csv("D_test_leaderboard.csv")
+    '''df_leaderboard = pd.read_csv("D_test_leaderboard.csv")
     submission_df = generate_submission(df_leaderboard)
     # IMPORTANT: The submission file must be named "submission_leaderboard_GroupName.csv",
     # replace GroupName with a group name of your choice. If you do not provide a group name,
     # your submission will fail!
     submission_df.to_csv("submission_leaderboard_GroupName.csv", index=False)
-
+    '''
+    
     # For the final leaderboard, change the file name to "submission_final_GroupName.csv"
     df_final = pd.read_csv("D_test_final.csv")
     submission_df = generate_submission(df_final)
     submission_df.to_csv("submission_final_GroupName.csv", index=False)
-    '''
+
 
 if __name__ == "__main__":
     main()
